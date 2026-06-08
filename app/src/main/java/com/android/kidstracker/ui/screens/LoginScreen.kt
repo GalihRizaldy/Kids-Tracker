@@ -26,6 +26,18 @@ import androidx.compose.ui.unit.dp
 
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.launch
+import com.android.kidstracker.data.network.SupabaseClient
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.auth.providers.builtin.Email
+import io.github.jan.supabase.postgrest.postgrest
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class UserProfile(
+    val id: String,
+    val role: String
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,11 +47,14 @@ fun LoginScreen(
     onNavigateToOrtu: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
+    var inputEmail by remember { mutableStateOf("") }
+    var inputPassword by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
     var selectedRole by remember { mutableStateOf(0) } // 0: Orang Tua, 1: Guru, 2: Admin
     val roles = listOf("Orang Tua", "Guru", "Admin")
+    
+    val coroutineScope = rememberCoroutineScope()
+    var isLoading by remember { mutableStateOf(false) }
 
     // Menggunakan background utama
     Box(
@@ -110,8 +125,8 @@ fun LoginScreen(
 
                 // Input Email
                 OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
+                    value = inputEmail,
+                    onValueChange = { inputEmail = it },
                     label = { Text("Email") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.small,
@@ -125,8 +140,8 @@ fun LoginScreen(
 
                 // Input Kata Sandi
                 OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
+                    value = inputPassword,
+                    onValueChange = { inputPassword = it },
                     label = { Text("Kata Sandi") },
                     modifier = Modifier.fillMaxWidth(),
                     visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
@@ -151,15 +166,56 @@ fun LoginScreen(
                 // Tombol Masuk
                 Button(
                     onClick = { 
-                        processLoginNavigation(
-                            email = email,
-                            onNavigateToAdmin = onNavigateToAdmin,
-                            onNavigateToGuru = onNavigateToGuru,
-                            onNavigateToOrtu = onNavigateToOrtu,
-                            onAccountNotFound = {
-                                Toast.makeText(context, "Akun tidak ditemukan", Toast.LENGTH_SHORT).show()
+                        if (inputEmail.isBlank() || inputPassword.isBlank()) {
+                            Toast.makeText(context, "Email dan password tidak boleh kosong", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+                        isLoading = true
+                        coroutineScope.launch {
+                            try {
+                                SupabaseClient.client.auth.signInWith(Email) { 
+                                    email = inputEmail.trim()
+                                    password = inputPassword
+                                }
+                                
+                                val currentUser = SupabaseClient.client.auth.currentUserOrNull()
+                                if (currentUser != null) {
+                                    val profile = SupabaseClient.client.postgrest["profiles"]
+                                        .select {
+                                            filter {
+                                                eq("id", currentUser.id)
+                                            }
+                                        }.decodeSingle<UserProfile>()
+                                        
+                                    isLoading = false
+                                    
+                                    val expectedRole = when (selectedRole) {
+                                        0 -> "ortu"
+                                        1 -> "guru"
+                                        2 -> "admin"
+                                        else -> ""
+                                    }
+                                    
+                                    if (profile.role.lowercase() == expectedRole) {
+                                        when (expectedRole) {
+                                            "admin" -> onNavigateToAdmin()
+                                            "guru" -> onNavigateToGuru()
+                                            "ortu" -> onNavigateToOrtu()
+                                        }
+                                    } else {
+                                        // Logout jika tab yang dipilih tidak sesuai dengan role di database
+                                        SupabaseClient.client.auth.signOut()
+                                        Toast.makeText(context, "Gagal: Akun tidak di temukan", Toast.LENGTH_LONG).show()
+                                    }
+                                } else {
+                                    isLoading = false
+                                    Toast.makeText(context, "Sesi tidak ditemukan setelah login", Toast.LENGTH_LONG).show()
+                                }
+                            } catch (e: Exception) {
+                                isLoading = false
+                                Toast.makeText(context, "Gagal: ${e.message}", Toast.LENGTH_LONG).show()
                             }
-                        )
+                        }
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -167,13 +223,22 @@ fun LoginScreen(
                     shape = MaterialTheme.shapes.medium,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary
-                    )
+                    ),
+                    enabled = !isLoading
                 ) {
-                    Text(
-                        text = "Masuk",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = "Masuk",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
                 }
             }
         }
@@ -214,18 +279,4 @@ fun RoleSegmentedControl(roles: List<String>, selectedIndex: Int, onRoleSelected
     }
 }
 
-fun processLoginNavigation(
-    email: String,
-    onNavigateToAdmin: () -> Unit,
-    onNavigateToGuru: () -> Unit,
-    onNavigateToOrtu: () -> Unit,
-    onAccountNotFound: () -> Unit
-) {
-    val emailLower = email.lowercase()
-    when {
-        emailLower.contains("admin") -> onNavigateToAdmin()
-        emailLower.contains("guru") -> onNavigateToGuru()
-        emailLower.contains("ortu") -> onNavigateToOrtu()
-        else -> onAccountNotFound()
-    }
-}
+
