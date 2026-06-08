@@ -4,6 +4,7 @@ import com.android.kidstracker.BuildConfig
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.auth.Auth
 import io.github.jan.supabase.postgrest.Postgrest
+import io.github.jan.supabase.functions.Functions
 
 object SupabaseClient {
     // Kita menggunakan BuildConfig yang sebelumnya sudah kita siapkan dari local.properties
@@ -14,5 +15,6 @@ object SupabaseClient {
     ) {
         install(Postgrest)
         install(Auth)
+        install(Functions)
     }
 }

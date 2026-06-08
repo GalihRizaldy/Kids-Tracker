@@ -21,7 +21,11 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import androidx.navigation.compose.rememberNavController
+import com.android.kidstracker.data.network.SupabaseClient
 import com.android.kidstracker.ui.theme.KidsTrackerTheme
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.postgrest.postgrest
+import androidx.compose.runtime.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,6 +37,35 @@ fun AdminProfileScreen(
     onNavigateToGrowth: () -> Unit = {},
     onNavigateToProfile: () -> Unit = {}
 ) {
+    var userName by remember { mutableStateOf("Memuat...") }
+    var userEmail by remember { mutableStateOf("Memuat...") }
+    var userRole by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        val currentUser = SupabaseClient.client.auth.currentUserOrNull()
+        if (currentUser != null) {
+            try {
+                val profile = SupabaseClient.client.postgrest["profiles"]
+                    .select { filter { eq("id", currentUser.id) } }
+                    .decodeSingleOrNull<AccountUser>()
+                
+                if (profile != null) {
+                    userName = profile.name
+                    userEmail = profile.email
+                    userRole = profile.role
+                } else {
+                    userName = "Tidak Ditemukan"
+                    userEmail = "-"
+                }
+            } catch (e: Exception) {
+                userName = "Error memuat"
+                userEmail = "-"
+            }
+        }
+    }
+
+    val initials = userName.split(" ").mapNotNull { it.firstOrNull()?.uppercase() }.take(2).joinToString("")
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -81,7 +114,7 @@ fun AdminProfileScreen(
                     ) {
                         // Inisial atau icon avatar
                         Text(
-                            text = "BH",
+                            text = initials,
                             style = MaterialTheme.typography.displayMedium,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                             fontWeight = FontWeight.Bold
@@ -89,7 +122,7 @@ fun AdminProfileScreen(
                     }
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "Bambang Herlambang",
+                        text = userName,
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
@@ -101,7 +134,7 @@ fun AdminProfileScreen(
                             .padding(horizontal = 12.dp, vertical = 6.dp)
                     ) {
                         Text(
-                            text = "Administrator Sistem",
+                            text = userEmail,
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                             fontWeight = FontWeight.SemiBold

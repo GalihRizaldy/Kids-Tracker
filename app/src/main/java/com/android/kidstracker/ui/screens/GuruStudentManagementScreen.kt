@@ -1,5 +1,6 @@
 package com.android.kidstracker.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -12,25 +13,31 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.navigation.NavController
-import androidx.navigation.compose.rememberNavController
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavController
+import androidx.navigation.compose.rememberNavController
+import com.android.kidstracker.data.network.SupabaseClient
 import com.android.kidstracker.ui.theme.KidsTrackerTheme
+import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import java.util.UUID
 
-// Dummy Data Class
-data class Student(
-    val id: String,
-    val nis: String,
-    val name: String,
-    val gender: String,
-    val avatarColor: Color
+@Serializable
+data class Murid(
+    val id: String = "", 
+    val nama: String, 
+    val nomor_induk: String, 
+    val jenis_kelamin: String, 
+    val alamat: String, 
+    val id_ortu: String?
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -42,13 +49,32 @@ fun GuruStudentManagementScreen(
     val coroutineScope = rememberCoroutineScope()
     var isSheetOpen by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val context = LocalContext.current
 
-    // Dummy Data
-    val students = listOf(
-        Student("1", "2023001", "Budi Santoso", "Laki-laki", Color(0xFFCEE5FF)), // primary-fixed
-        Student("2", "2023002", "Siti Aminah", "Perempuan", Color(0xFFBFF0B1)),  // secondary-fixed
-        Student("3", "2023003", "Agus Wijaya", "Laki-laki", Color(0xFFFFDEA7))   // tertiary-fixed
-    )
+    // Real Data States
+    var muridList by remember { mutableStateOf<List<Murid>>(emptyList()) }
+    var ortuList by remember { mutableStateOf<List<AccountUser>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    fun fetchAccounts() {
+        coroutineScope.launch {
+            try {
+                isLoading = true
+                muridList = SupabaseClient.client.postgrest["murid"].select().decodeList<Murid>()
+                ortuList = SupabaseClient.client.postgrest["profiles"]
+                    .select { filter { eq("role", "ortu") } }
+                    .decodeList<AccountUser>()
+            } catch (e: Exception) {
+                Toast.makeText(context, "Gagal memuat data: ${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        fetchAccounts()
+    }
 
     // Form States
     var formName by remember { mutableStateOf("") }
@@ -56,6 +82,12 @@ fun GuruStudentManagementScreen(
     var formGender by remember { mutableStateOf("") }
     var formAddress by remember { mutableStateOf("") }
     var expandedGenderDropdown by remember { mutableStateOf(false) }
+    
+    var selectedOrtuId by remember { mutableStateOf<String?>(null) }
+    var selectedOrtuName by remember { mutableStateOf("") }
+    var expandedOrtuDropdown by remember { mutableStateOf(false) }
+    
+    var editingStudentId by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
         topBar = {
@@ -94,16 +126,6 @@ fun GuruStudentManagementScreen(
                         )
                     }
                 },
-
-                actions = {
-                    IconButton(onClick = { /*TODO*/ }) {
-                        Icon(
-                            imageVector = Icons.Default.Notifications,
-                            contentDescription = "Notifikasi",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
                 )
@@ -116,6 +138,9 @@ fun GuruStudentManagementScreen(
                     formNis = ""
                     formGender = ""
                     formAddress = ""
+                    selectedOrtuId = null
+                    selectedOrtuName = ""
+                    editingStudentId = null
                     isSheetOpen = true 
                 },
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -126,32 +151,12 @@ fun GuruStudentManagementScreen(
             }
         },
         bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-            ) {
-                NavigationBarItem(
-                    selected = true,
-                    onClick = { /*TODO*/ },
-                    icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
-                    label = { Text("Home") },
-                    colors = NavigationBarItemDefaults.colors(
-                        indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
-                        selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
-                )
-                NavigationBarItem(
-                    selected = false,
-                    onClick = { /*TODO*/ },
-                    icon = { Icon(Icons.Default.MonitorHeart, contentDescription = "Growth") },
-                    label = { Text("Growth") }
-                )
-                NavigationBarItem(
-                    selected = false,
-                    onClick = { /*TODO*/ },
-                    icon = { Icon(Icons.Default.Person, contentDescription = "Profile") },
-                    label = { Text("Profile") }
-                )
-            }
+            com.android.kidstracker.ui.components.ChildDevBottomNavigationBar(
+                currentRoute = "GuruHome",
+                onNavigateToHome = { /* TODO */ },
+                onNavigateToGrowth = { /* TODO */ },
+                onNavigateToProfile = { /* TODO */ }
+            )
         }
     ) { paddingValues ->
         Column(
@@ -178,22 +183,49 @@ fun GuruStudentManagementScreen(
             }
 
             // Student List
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(students) { student ->
-                    StudentCard(student = student, onEditClick = {
-                        formName = student.name
-                        formNis = student.nis
-                        formGender = student.gender
-                        formAddress = ""
-                        isSheetOpen = true
-                    })
+            if (isLoading) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
                 }
-                item {
-                    Spacer(modifier = Modifier.height(80.dp)) // FAB spacing
+            } else if (muridList.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Belum ada data murid.")
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(muridList) { student ->
+                        StudentCard(
+                            student = student, 
+                            onEditClick = {
+                                formName = student.nama
+                                formNis = student.nomor_induk
+                                formGender = student.jenis_kelamin
+                                formAddress = student.alamat
+                                selectedOrtuId = student.id_ortu
+                                selectedOrtuName = ortuList.find { it.id == student.id_ortu }?.name ?: ""
+                                editingStudentId = student.id
+                                isSheetOpen = true
+                            },
+                            onDeleteClick = {
+                                coroutineScope.launch {
+                                    try {
+                                        SupabaseClient.client.postgrest["murid"].delete { filter { eq("id", student.id) } }
+                                        Toast.makeText(context, "Murid dihapus!", Toast.LENGTH_SHORT).show()
+                                        fetchAccounts()
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Gagal menghapus: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        )
+                    }
+                    item {
+                        Spacer(modifier = Modifier.height(80.dp)) // FAB spacing
+                    }
                 }
             }
         }
@@ -257,7 +289,7 @@ fun GuruStudentManagementScreen(
                     )
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Gender Dropdown Placeholder
+                    // Gender Dropdown
                     ExposedDropdownMenuBox(
                         expanded = expandedGenderDropdown,
                         onExpandedChange = { expandedGenderDropdown = !expandedGenderDropdown }
@@ -292,6 +324,38 @@ fun GuruStudentManagementScreen(
                         }
                     }
                     Spacer(modifier = Modifier.height(16.dp))
+                    
+                    // Parent (Orang Tua) Dropdown
+                    ExposedDropdownMenuBox(
+                        expanded = expandedOrtuDropdown,
+                        onExpandedChange = { expandedOrtuDropdown = !expandedOrtuDropdown }
+                    ) {
+                        OutlinedTextField(
+                            value = selectedOrtuName.ifEmpty { "Pilih orang tua..." },
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Orang Tua") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedOrtuDropdown) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        ExposedDropdownMenu(
+                            expanded = expandedOrtuDropdown,
+                            onDismissRequest = { expandedOrtuDropdown = false }
+                        ) {
+                            ortuList.forEach { ortu ->
+                                DropdownMenuItem(
+                                    text = { Text(ortu.name) },
+                                    onClick = {
+                                        selectedOrtuId = ortu.id
+                                        selectedOrtuName = ortu.name
+                                        expandedOrtuDropdown = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
 
                     OutlinedTextField(
                         value = formAddress,
@@ -320,7 +384,38 @@ fun GuruStudentManagementScreen(
                         }
                         Button(
                             onClick = {
-                                coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
+                                coroutineScope.launch {
+                                    try {
+                                        if (editingStudentId != null) {
+                                            val muridUpdate = Murid(
+                                                id = editingStudentId!!,
+                                                nama = formName,
+                                                nomor_induk = formNis,
+                                                jenis_kelamin = formGender,
+                                                alamat = formAddress,
+                                                id_ortu = selectedOrtuId
+                                            )
+                                            SupabaseClient.client.postgrest["murid"].update(muridUpdate) { filter { eq("id", editingStudentId!!) } }
+                                            Toast.makeText(context, "Data berhasil diperbarui!", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            val newId = UUID.randomUUID().toString()
+                                            val muridBaru = Murid(
+                                                id = newId,
+                                                nama = formName,
+                                                nomor_induk = formNis,
+                                                jenis_kelamin = formGender,
+                                                alamat = formAddress,
+                                                id_ortu = selectedOrtuId
+                                            )
+                                            SupabaseClient.client.postgrest["murid"].insert(muridBaru)
+                                            Toast.makeText(context, "Data berhasil ditambahkan!", Toast.LENGTH_SHORT).show()
+                                        }
+                                        fetchAccounts()
+                                        sheetState.hide()
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Gagal menyimpan: ${e.message}", Toast.LENGTH_LONG).show()
+                                    }
+                                }.invokeOnCompletion {
                                     if (!sheetState.isVisible) isSheetOpen = false
                                 }
                             },
@@ -336,7 +431,7 @@ fun GuruStudentManagementScreen(
 }
 
 @Composable
-fun StudentCard(student: Student, onEditClick: () -> Unit) {
+fun StudentCard(student: Murid, onEditClick: () -> Unit, onDeleteClick: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
@@ -354,14 +449,14 @@ fun StudentCard(student: Student, onEditClick: () -> Unit) {
                 modifier = Modifier
                     .size(48.dp)
                     .clip(CircleShape)
-                    .background(student.avatarColor),
+                    .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
-                val initials = student.name.split(" ").mapNotNull { it.firstOrNull()?.uppercase() }.take(2).joinToString("")
+                val initials = student.nama.split(" ").mapNotNull { it.firstOrNull()?.uppercase() }.take(2).joinToString("")
                 Text(
                     text = initials,
                     style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             }
 
@@ -370,12 +465,12 @@ fun StudentCard(student: Student, onEditClick: () -> Unit) {
             // Info
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = student.name,
+                    text = student.nama,
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "ID: ${student.nis} • ${student.gender}",
+                    text = "ID: ${student.nomor_induk} • ${student.jenis_kelamin}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -386,7 +481,7 @@ fun StudentCard(student: Student, onEditClick: () -> Unit) {
                 IconButton(onClick = onEditClick) {
                     Icon(Icons.Default.Edit, contentDescription = "Edit", tint = MaterialTheme.colorScheme.primary)
                 }
-                IconButton(onClick = { /* TODO Delete */ }) {
+                IconButton(onClick = onDeleteClick) {
                     Icon(Icons.Default.Delete, contentDescription = "Hapus", tint = MaterialTheme.colorScheme.error)
                 }
             }

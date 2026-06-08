@@ -1,5 +1,6 @@
 package com.android.kidstracker.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,22 +15,46 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
-import androidx.navigation.NavController
-import androidx.navigation.compose.rememberNavController
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavController
+import androidx.navigation.compose.rememberNavController
+import com.android.kidstracker.data.network.SupabaseClient
 import com.android.kidstracker.ui.theme.KidsTrackerTheme
+import io.github.jan.supabase.postgrest.postgrest
+import io.github.jan.supabase.functions.functions
+import io.ktor.client.request.setBody
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import kotlinx.coroutines.launch
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import java.util.UUID
 
+import android.util.Log
+
+@Serializable
+data class CreateUserRequest(
+    val email: String,
+    val password: String,
+    val name: String,
+    val role: String
+)
+
+@Serializable
 data class AccountUser(
     val id: String,
-    val name: String,
-    val email: String,
-    val isActive: Boolean
+    val name: String = "Tanpa Nama",
+    val email: String = "Tanpa Email",
+    val role: String,
+    @SerialName("is_active")
+    val isActive: Boolean = true
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -38,24 +63,48 @@ fun AdminAccountManagementScreen(
     navController: NavController,
     onNavigateBack: () -> Unit = {}
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
     var selectedTabIndex by remember { mutableStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
     
-    // Dummy Data
-    val dummyGuru = listOf(
-        AccountUser("1", "Ahmad Santoso", "ahmad.santoso@sekolah.id", true),
-        AccountUser("2", "Budi Wijaya", "budi.wijaya@sekolah.id", true),
-        AccountUser("3", "Citra Dewi", "citra.dewi@sekolah.id", false),
-        AccountUser("4", "Dian Rahmawati", "dian.r@sekolah.id", true)
-    )
-    val dummyOrangTua = listOf(
-        AccountUser("5", "Eko Prasetyo", "eko.p@email.com", true),
-        AccountUser("6", "Fitri Ani", "fitri.ani@email.com", true),
-        AccountUser("7", "Gilang Ramadhan", "gilang.r@email.com", false)
-    )
+    // State Management
+    var guruList by remember { mutableStateOf<List<AccountUser>>(emptyList()) }
+    var ortuList by remember { mutableStateOf<List<AccountUser>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(false) }
+    var showAddDialog by remember { mutableStateOf(false) }
+    var selectedUserToEdit by remember { mutableStateOf<AccountUser?>(null) }
     
-    val currentList = if (selectedTabIndex == 0) dummyGuru else dummyOrangTua
+    // Fungsi Read
+    fun fetchAccounts() {
+        coroutineScope.launch {
+            isLoading = true
+            try {
+                val profiles = SupabaseClient.client.postgrest["profiles"]
+                    .select().decodeList<AccountUser>()
+                guruList = profiles.filter { it.role.lowercase() == "guru" }
+                ortuList = profiles.filter { it.role.lowercase() == "ortu" }
+            } catch (e: Exception) {
+                Log.e("KidsTracker", "Fetch Accounts Error", e)
+                Toast.makeText(context, "Gagal memuat data: ${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        fetchAccounts()
+    }
+
+    val currentList = if (selectedTabIndex == 0) guruList else ortuList
     val tabs = listOf("Guru", "Orang Tua")
+
+    // Filter by search query
+    val filteredList = currentList.filter {
+        it.name.contains(searchQuery, ignoreCase = true) || it.email.contains(searchQuery, ignoreCase = true)
+    }
 
     Scaffold(
         topBar = {
@@ -93,7 +142,7 @@ fun AdminAccountManagementScreen(
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = { /*TODO*/ },
+                onClick = { showAddDialog = true },
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                 icon = { Icon(Icons.Default.Add, contentDescription = "Tambah") },
@@ -177,30 +226,109 @@ fun AdminAccountManagementScreen(
                 )
 
                 // List of Accounts
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(currentList) { user ->
-                        AccountCard(user = user)
+                if (isLoading) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
                     }
-                    item {
-                        Spacer(modifier = Modifier.height(80.dp)) // Padding for FAB
+                } else if (filteredList.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("Tidak ada data", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(filteredList) { user ->
+                            AccountCard(
+                                user = user,
+                                onEdit = { selectedUserToEdit = user },
+                                onDelete = {
+                                    coroutineScope.launch {
+                                        try {
+                                            SupabaseClient.client.postgrest["profiles"].delete {
+                                                filter { eq("id", user.id) }
+                                            }
+                                            Toast.makeText(context, "Berhasil dihapus", Toast.LENGTH_SHORT).show()
+                                            fetchAccounts()
+                                        } catch (e: Exception) {
+                                            Log.e("KidsTracker", "Delete Account Error", e)
+                                            Toast.makeText(context, "Gagal menghapus: ${e.message}", Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                        item {
+                            Spacer(modifier = Modifier.height(80.dp)) // Padding for FAB
+                        }
                     }
                 }
             }
         }
     }
+
+    // Dialog Tambah Akun
+    if (showAddDialog) {
+        AddAccountDialog(
+            defaultRole = if (selectedTabIndex == 0) "guru" else "ortu",
+            onDismiss = { showAddDialog = false },
+            onConfirm = { name, email, password, role ->
+                coroutineScope.launch {
+                    val requestBody = CreateUserRequest(email, password, name, role)
+                    try {
+                        SupabaseClient.client.functions.invoke("create-user") {
+                            contentType(ContentType.Application.Json)
+                            setBody(requestBody)
+                        }
+                        showAddDialog = false
+                        fetchAccounts()
+                        Toast.makeText(context, "Akun berhasil dibuat via Edge Function!", Toast.LENGTH_LONG).show()
+                    } catch (e: Exception) {
+                        Log.e("KidsTracker", "Add Account Error", e)
+                        Toast.makeText(context, "Gagal menambahkan: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        )
+    }
+
+    // Dialog Edit Akun
+    selectedUserToEdit?.let { user ->
+        EditAccountDialog(
+            user = user,
+            onDismiss = { selectedUserToEdit = null },
+            onConfirm = { newName ->
+                coroutineScope.launch {
+                    try {
+                        // Menggunakan Map untuk partial update
+                        val updateData = mapOf("name" to newName)
+                        SupabaseClient.client.postgrest["profiles"].update(updateData) {
+                            filter { eq("id", user.id) }
+                        }
+                        Toast.makeText(context, "Berhasil diperbarui", Toast.LENGTH_SHORT).show()
+                        fetchAccounts()
+                        selectedUserToEdit = null
+                    } catch (e: Exception) {
+                        Log.e("KidsTracker", "Update Account Error", e)
+                        Toast.makeText(context, "Gagal memperbarui: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        )
+    }
 }
 
 @Composable
-fun AccountCard(user: AccountUser) {
+fun AccountCard(user: AccountUser, onEdit: () -> Unit, onDelete: () -> Unit) {
     val initials = user.name.split(" ").mapNotNull { it.firstOrNull()?.uppercase() }.take(2).joinToString("")
     val isInactive = !user.isActive
 
     val containerColor = if (isInactive) MaterialTheme.colorScheme.surfaceContainerLowest else MaterialTheme.colorScheme.surfaceContainerLow
     val borderModifier = if (isInactive) Modifier.border(1.dp, MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)) else Modifier
     val alpha = if (isInactive) 0.75f else 1f
+    
+    var expanded by remember { mutableStateOf(false) }
 
     Card(
         modifier = Modifier
@@ -278,16 +406,140 @@ fun AccountCard(user: AccountUser) {
                 Spacer(modifier = Modifier.width(8.dp))
 
                 // More Options Icon
-                IconButton(onClick = { /*TODO*/ }, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "Options",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Box {
+                    IconButton(onClick = { expanded = true }, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Options",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Edit Nama") },
+                            onClick = {
+                                expanded = false
+                                onEdit()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Hapus", color = MaterialTheme.colorScheme.error) },
+                            onClick = {
+                                expanded = false
+                                onDelete()
+                            }
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+fun AddAccountDialog(
+    defaultRole: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String, String, String) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var role by remember { mutableStateOf(defaultRole) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Tambah Akun Baru", style = MaterialTheme.typography.titleLarge) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Nama Lengkap") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    label = { Text("Email") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Password Sementara") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                Column {
+                    Text("Role Akses:", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = role == "guru", onClick = { role = "guru" })
+                        Text("Guru", modifier = Modifier.clickable { role = "guru" })
+                        Spacer(modifier = Modifier.width(16.dp))
+                        RadioButton(selected = role == "ortu", onClick = { role = "ortu" })
+                        Text("Orang Tua", modifier = Modifier.clickable { role = "ortu" })
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(name, email, password, role) },
+                enabled = name.isNotBlank() && email.isNotBlank() && password.isNotBlank()
+            ) {
+                Text("Simpan")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Batal")
+            }
+        }
+    )
+}
+
+@Composable
+fun EditAccountDialog(
+    user: AccountUser,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var name by remember { mutableStateOf(user.name) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit Nama Akun") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Nama Lengkap") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(name) },
+                enabled = name.isNotBlank()
+            ) {
+                Text("Simpan")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Batal")
+            }
+        }
+    )
 }
 
 @Preview(showBackground = true)
