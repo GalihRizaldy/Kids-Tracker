@@ -36,7 +36,8 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class UserProfile(
     val id: String,
-    val role: String
+    val role: String,
+    val name: String = "User"
 )
 
 @OptIn(ExperimentalMaterial3Api::class)

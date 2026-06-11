@@ -14,7 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,6 +27,10 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.android.kidstracker.ui.theme.KidsTrackerTheme
+import com.android.kidstracker.data.network.SupabaseClient
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.postgrest.postgrest
+import kotlinx.coroutines.launch
 
 // Dummy data classes
 data class ActivityItem(
@@ -50,6 +54,39 @@ fun GuruDashboardScreen(
     onNavigateToGrowth: () -> Unit = {},
     onNavigateToProfile: () -> Unit = {}
 ) {
+    var namaGuru by remember { mutableStateOf("Memuat...") }
+    var jumlahMurid by remember { mutableStateOf(0) }
+    var totalTugas by remember { mutableStateOf(0) }
+    val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        coroutineScope.launch {
+            try {
+                val currentUser = SupabaseClient.client.auth.currentUserOrNull()
+                if (currentUser != null) {
+                    val profile = SupabaseClient.client.postgrest["profiles"]
+                        .select { filter { eq("id", currentUser.id) } }
+                        .decodeSingleOrNull<UserProfile>()
+                    if (profile != null) {
+                        namaGuru = profile.name
+                    }
+                    
+                    val daftarMurid = SupabaseClient.client.postgrest["murid"]
+                        .select { filter { eq("id_guru", currentUser.id) } }
+                        .decodeList<Murid>()
+                    jumlahMurid = daftarMurid.size
+
+                    val daftarTugas = SupabaseClient.client.postgrest["tugas"]
+                        .select { filter { eq("id_guru", currentUser.id) } }
+                        .decodeList<Tugas>()
+                    totalTugas = daftarTugas.size
+                }
+            } catch (e: Exception) {
+                // Ignore error
+            }
+        }
+    }
+
     val recentActivities = listOf(
         ActivityItem(
             studentName = "Andi Saputra",
@@ -141,7 +178,7 @@ fun GuruDashboardScreen(
             item {
                 Column {
                     Text(
-                        text = "Selamat Datang, Guru",
+                        text = "Selamat Datang, $namaGuru",
                         style = MaterialTheme.typography.headlineMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -197,7 +234,7 @@ fun GuruDashboardScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Text(
-                                        text = "24",
+                                        text = jumlahMurid.toString(),
                                         style = MaterialTheme.typography.displayMedium,
                                         color = MaterialTheme.colorScheme.primary,
                                         fontWeight = FontWeight.Bold
@@ -239,12 +276,12 @@ fun GuruDashboardScreen(
                         ) {
                             Column {
                                 Text(
-                                    text = "Tugas Belum Dinilai",
+                                    text = "Total Tugas",
                                     style = MaterialTheme.typography.labelLarge,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.9f)
                                 )
                                 Text(
-                                    text = "12",
+                                    text = totalTugas.toString(),
                                     style = MaterialTheme.typography.displayMedium,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                                     fontWeight = FontWeight.Bold

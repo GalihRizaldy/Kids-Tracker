@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,15 +28,32 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.android.kidstracker.ui.theme.KidsTrackerTheme
+import com.android.kidstracker.data.network.SupabaseClient
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.postgrest.postgrest
+import io.github.jan.supabase.storage.storage
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
 
-// Dummy Data Class
-data class OrtuTaskItem(
-    val title: String,
-    val description: String,
-    val deadline: String,
-    val isCompleted: Boolean = false,
-    val categoryColor: Color = Color.Transparent
+@Serializable
+data class PengumpulanTugas(
+    val id: String = "",
+    val id_tugas: String,
+    val id_murid: String,
+    val tanggal_kumpul: String? = null,
+    val catatan: String? = null,
+    val foto_url: String? = null
+)
+
+data class TugasAnakItem(
+    val tugas: Tugas,
+    val murid: Murid,
+    val pengumpulan: PengumpulanTugas?
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -47,34 +65,68 @@ fun OrtuTaskSubmitScreen(
     val coroutineScope = rememberCoroutineScope()
     var selectedTabIndex by remember { mutableStateOf(0) }
     var isSheetOpen by remember { mutableStateOf(false) }
-    var selectedTask by remember { mutableStateOf<OrtuTaskItem?>(null) }
+    var selectedTask by remember { mutableStateOf<TugasAnakItem?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    val tasks = listOf(
-        OrtuTaskItem(
-            title = "Menggambar Bentuk Dasar",
-            description = "Latihan motorik halus dengan menggambar lingkaran, kotak, dan segitiga di kertas.",
-            deadline = "Besok, 17:00",
-            isCompleted = false,
-            categoryColor = Color(0xFF004A76) // primary
-        ),
-        OrtuTaskItem(
-            title = "Bercerita Pendek",
-            description = "Minta anak menceritakan kembali dongeng fabel sederhana yang dibacakan.",
-            deadline = "15 Okt, 10:00",
-            isCompleted = false,
-            categoryColor = Color(0xFF3E6837) // secondary
-        ),
-        OrtuTaskItem(
-            title = "Menyusun Balok",
-            description = "Tugas Selesai",
-            deadline = "",
-            isCompleted = true
-        )
-    )
+    var daftarMurid by remember { mutableStateOf<List<Murid>>(emptyList()) }
+    var selectedMurid by remember { mutableStateOf<Murid?>(null) }
+    var semuaTugasList by remember { mutableStateOf<List<TugasAnakItem>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
 
-    val activeTasks = tasks.filter { !it.isCompleted }
-    val completedTasks = tasks.filter { it.isCompleted }
+    val tugasUntukAnakIni = semuaTugasList.filter { it.murid.id == selectedMurid?.id }
+    val selesaiList = tugasUntukAnakIni.filter { it.pengumpulan != null }
+    val belumDikerjakanList = tugasUntukAnakIni.filter { it.pengumpulan == null }
+
+    val context = LocalContext.current
+    var selectedImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        selectedImageUri = uri
+    }
+
+    LaunchedEffect(Unit) {
+        try {
+            val currentUser = SupabaseClient.client.auth.currentUserOrNull()
+            if (currentUser != null) {
+                val muridFetched = SupabaseClient.client.postgrest["murid"]
+                    .select { filter { eq("id_ortu", currentUser.id) } }
+                    .decodeList<Murid>()
+
+                daftarMurid = muridFetched
+                if (muridFetched.isNotEmpty() && selectedMurid == null) {
+                    selectedMurid = muridFetched[0]
+                }
+
+                val guruIds = muridFetched.mapNotNull { it.id_guru }.distinct()
+                val muridIds = muridFetched.map { it.id }
+
+                if (guruIds.isNotEmpty() && muridIds.isNotEmpty()) {
+                    val semuaTugas = SupabaseClient.client.postgrest["tugas"]
+                        .select { filter { isIn("id_guru", guruIds) } }
+                        .decodeList<Tugas>()
+
+                    val semuaPengumpulan = SupabaseClient.client.postgrest["pengumpulan_tugas"]
+                        .select { filter { isIn("id_murid", muridIds) } }
+                        .decodeList<PengumpulanTugas>()
+
+                    val pairedList = mutableListOf<TugasAnakItem>()
+                    muridFetched.forEach { murid ->
+                        val tugasGuruIni = semuaTugas.filter { it.id_guru == murid.id_guru }
+                        tugasGuruIni.forEach { tugas ->
+                            val pengumpulan = semuaPengumpulan.find { it.id_tugas == tugas.id && it.id_murid == murid.id }
+                            pairedList.add(TugasAnakItem(tugas, murid, pengumpulan))
+                        }
+                    }
+                    semuaTugasList = pairedList
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            isLoading = false
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -145,6 +197,27 @@ fun OrtuTaskSubmitScreen(
                 .background(MaterialTheme.colorScheme.background)
                 .padding(paddingValues)
         ) {
+            // Child Selector
+            if (daftarMurid.isNotEmpty()) {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(daftarMurid) { murid ->
+                        val isSelected = selectedMurid?.id == murid.id
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { selectedMurid = murid },
+                            label = { Text(murid.nama) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        )
+                    }
+                }
+            }
+
             // Tabs for Active vs Completed
             TabRow(
                 selectedTabIndex = selectedTabIndex,
@@ -160,69 +233,37 @@ fun OrtuTaskSubmitScreen(
                 Tab(
                     selected = selectedTabIndex == 0,
                     onClick = { selectedTabIndex = 0 },
-                    text = { Text("Belum Dikerjakan (${activeTasks.size})") }
+                    text = { Text("Belum Dikerjakan (${belumDikerjakanList.size})") }
                 )
                 Tab(
                     selected = selectedTabIndex == 1,
                     onClick = { selectedTabIndex = 1 },
-                    text = { Text("Selesai (${completedTasks.size})") }
+                    text = { Text("Selesai (${selesaiList.size})") }
                 )
             }
 
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                val listToDisplay = if (selectedTabIndex == 0) activeTasks else completedTasks
-
-                items(listToDisplay) { task ->
-                    if (task.isCompleted) {
-                        // Completed Task Card
-                        Card(
-                            modifier = Modifier.fillMaxWidth().alpha(0.6f),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceContainerHigh)
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.Top
-                                ) {
-                                    Text(
-                                        text = task.title,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        fontWeight = FontWeight.SemiBold,
-                                        textDecoration = TextDecoration.LineThrough
-                                    )
-                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
-                                }
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = task.description,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    } else {
-                        // Active Task Card
-                        Card(
-                            modifier = Modifier.fillMaxWidth().clickable {
-                                selectedTask = task
-                                isSheetOpen = true
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                        ) {
-                            Row(modifier = Modifier.fillMaxWidth()) {
-                                // Left Border Indicator
-                                Box(modifier = Modifier.width(4.dp).fillMaxHeight().background(task.categoryColor))
-                                
+            if (isLoading) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    val listToDisplay = if (selectedTabIndex == 0) belumDikerjakanList else selesaiList
+    
+                    items(listToDisplay) { item ->
+                        val task = item.tugas
+                        if (selectedTabIndex == 1) {
+                            // Completed Task Card
+                            Card(
+                                modifier = Modifier.fillMaxWidth().alpha(0.6f),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceContainerHigh)
+                            ) {
                                 Column(modifier = Modifier.padding(16.dp)) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -230,41 +271,81 @@ fun OrtuTaskSubmitScreen(
                                         verticalAlignment = Alignment.Top
                                     ) {
                                         Text(
-                                            text = task.title,
+                                            text = task.judul,
                                             style = MaterialTheme.typography.titleMedium,
                                             color = MaterialTheme.colorScheme.onSurface,
-                                            fontWeight = FontWeight.SemiBold
+                                            fontWeight = FontWeight.SemiBold,
+                                            textDecoration = TextDecoration.LineThrough
                                         )
-                                        Icon(Icons.Default.ChevronRight, contentDescription = "Detail", tint = MaterialTheme.colorScheme.primary)
+                                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
                                     }
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
-                                        text = task.description,
+                                        text = task.deskripsi ?: "Tidak ada deskripsi",
                                         style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.Event, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline)
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Tenggat: ${task.deadline}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-                                        }
-                                        Button(
-                                            onClick = {
-                                                selectedTask = task
-                                                isSheetOpen = true
-                                            },
-                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                            modifier = Modifier.height(32.dp)
+                                }
+                            }
+                        } else {
+                            // Active Task Card
+                            Card(
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    selectedTask = item
+                                    isSheetOpen = true
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                            ) {
+                                Row(modifier = Modifier.fillMaxWidth()) {
+                                    // Left Border Indicator
+                                    Box(modifier = Modifier.width(4.dp).fillMaxHeight().background(MaterialTheme.colorScheme.primary))
+                                    
+                                    Column(modifier = Modifier.padding(16.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.Top
                                         ) {
-                                            Text("Kerjakan", style = MaterialTheme.typography.labelSmall)
+                                            Text(
+                                                text = task.judul,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Icon(Icons.Default.ChevronRight, contentDescription = "Detail", tint = MaterialTheme.colorScheme.primary)
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = task.deskripsi ?: "Tidak ada deskripsi",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.Event, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline)
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                val tenggat = if (task.tenggat_waktu != null && task.waktu_tenggat != null) "${task.tenggat_waktu} ${task.waktu_tenggat}" else task.tenggat_waktu ?: "Tidak ada"
+                                                Text("Tenggat: $tenggat", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                            }
+                                            Button(
+                                                onClick = {
+                                                    selectedTask = item
+                                                    isSheetOpen = true
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                                modifier = Modifier.height(32.dp)
+                                            ) {
+                                                Text("Kerjakan", style = MaterialTheme.typography.labelSmall)
+                                            }
                                         }
                                     }
                                 }
@@ -302,10 +383,11 @@ fun OrtuTaskSubmitScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Schedule, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text(selectedTask!!.deadline, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                            val tenggat = if (selectedTask!!.tugas.tenggat_waktu != null && selectedTask!!.tugas.waktu_tenggat != null) "${selectedTask!!.tugas.tenggat_waktu} ${selectedTask!!.tugas.waktu_tenggat}" else selectedTask!!.tugas.tenggat_waktu ?: "Tidak ada"
+                            Text(tenggat, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
                         }
                     }
-                    Text(text = selectedTask!!.title, style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
+                    Text(text = selectedTask!!.tugas.judul, style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = "Bantu anak Anda berlatih sesuai dengan deskripsi tugas. Kumpulkan bukti berupa foto hasil kerja atau kegiatan.",
@@ -322,7 +404,9 @@ fun OrtuTaskSubmitScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .border(2.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
-                            .clickable { /*TODO Upload*/ }
+                            .clickable {
+                                photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            }
                             .padding(24.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -337,8 +421,8 @@ fun OrtuTaskSubmitScreen(
                                 Icon(Icons.Default.AddAPhoto, contentDescription = "Upload", tint = MaterialTheme.colorScheme.onPrimaryContainer)
                             }
                             Spacer(modifier = Modifier.height(12.dp))
-                            Text("Unggah Foto Hasil Kerja", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
-                            Text("Ketuk untuk mengambil foto atau pilih dari galeri", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(if (selectedImageUri == null) "Unggah Foto Hasil Kerja" else "Ubah Foto Hasil Kerja", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
+                            Text(if (selectedImageUri == null) "Ketuk untuk mengambil foto atau pilih dari galeri" else "Foto terpilih: ${selectedImageUri?.lastPathSegment}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
 
@@ -374,8 +458,46 @@ fun OrtuTaskSubmitScreen(
                         }
                         Button(
                             onClick = {
-                                coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
-                                    if (!sheetState.isVisible) isSheetOpen = false
+                                coroutineScope.launch {
+                                    try {
+                                        var imageUrl: String? = null
+                                        if (selectedImageUri != null) {
+                                            val inputStream = context.contentResolver.openInputStream(selectedImageUri!!)
+                                            val imageByteArray = inputStream?.readBytes()
+                                            inputStream?.close()
+
+                                            if (imageByteArray != null) {
+                                                val fileName = "tugas_${System.currentTimeMillis()}.jpg"
+                                                SupabaseClient.client.storage.from("foto_tugas").upload(fileName, imageByteArray)
+                                                imageUrl = SupabaseClient.client.storage.from("foto_tugas").publicUrl(fileName)
+                                            }
+                                        }
+
+                                        val pengumpulan = PengumpulanTugas(
+                                            id_tugas = selectedTask!!.tugas.id,
+                                            id_murid = selectedTask!!.murid.id,
+                                            tanggal_kumpul = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date()),
+                                            catatan = formNotes,
+                                            foto_url = imageUrl
+                                        )
+
+                                        SupabaseClient.client.postgrest["pengumpulan_tugas"].insert(pengumpulan)
+                                        
+                                        Toast.makeText(context, "Tugas berhasil dikumpulkan!", Toast.LENGTH_SHORT).show()
+                                        
+                                        // Update local state so it moves to Selesai
+                                        val updatedItem = selectedTask!!.copy(pengumpulan = pengumpulan)
+                                        semuaTugasList = semuaTugasList.map { 
+                                            if (it.tugas.id == updatedItem.tugas.id && it.murid.id == updatedItem.murid.id) updatedItem else it 
+                                        }
+                                        
+                                        sheetState.hide()
+                                        isSheetOpen = false
+                                        selectedImageUri = null
+                                        formNotes = ""
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Gagal mengumpulkan: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
                                 }
                             }
                         ) {

@@ -25,6 +25,7 @@ import androidx.navigation.NavController
 import androidx.navigation.compose.rememberNavController
 import com.android.kidstracker.data.network.SupabaseClient
 import com.android.kidstracker.ui.theme.KidsTrackerTheme
+import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
@@ -37,7 +38,8 @@ data class Murid(
     val nomor_induk: String, 
     val jenis_kelamin: String, 
     val alamat: String, 
-    val id_ortu: String?
+    val id_ortu: String?,
+    val id_guru: String? = null
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -60,7 +62,10 @@ fun GuruStudentManagementScreen(
         coroutineScope.launch {
             try {
                 isLoading = true
-                muridList = SupabaseClient.client.postgrest["murid"].select().decodeList<Murid>()
+                val currentUser = SupabaseClient.client.auth.currentUserOrNull()
+                muridList = SupabaseClient.client.postgrest["murid"]
+                    .select { filter { eq("id_guru", currentUser?.id ?: "") } }
+                    .decodeList<Murid>()
                 ortuList = SupabaseClient.client.postgrest["profiles"]
                     .select { filter { eq("role", "ortu") } }
                     .decodeList<AccountUser>()
@@ -386,6 +391,7 @@ fun GuruStudentManagementScreen(
                             onClick = {
                                 coroutineScope.launch {
                                     try {
+                                        val currentUser = SupabaseClient.client.auth.currentUserOrNull()
                                         if (editingStudentId != null) {
                                             val muridUpdate = Murid(
                                                 id = editingStudentId!!,
@@ -393,7 +399,8 @@ fun GuruStudentManagementScreen(
                                                 nomor_induk = formNis,
                                                 jenis_kelamin = formGender,
                                                 alamat = formAddress,
-                                                id_ortu = selectedOrtuId
+                                                id_ortu = selectedOrtuId,
+                                                id_guru = currentUser?.id
                                             )
                                             SupabaseClient.client.postgrest["murid"].update(muridUpdate) { filter { eq("id", editingStudentId!!) } }
                                             Toast.makeText(context, "Data berhasil diperbarui!", Toast.LENGTH_SHORT).show()
@@ -405,7 +412,8 @@ fun GuruStudentManagementScreen(
                                                 nomor_induk = formNis,
                                                 jenis_kelamin = formGender,
                                                 alamat = formAddress,
-                                                id_ortu = selectedOrtuId
+                                                id_ortu = selectedOrtuId,
+                                                id_guru = currentUser?.id
                                             )
                                             SupabaseClient.client.postgrest["murid"].insert(muridBaru)
                                             Toast.makeText(context, "Data berhasil ditambahkan!", Toast.LENGTH_SHORT).show()

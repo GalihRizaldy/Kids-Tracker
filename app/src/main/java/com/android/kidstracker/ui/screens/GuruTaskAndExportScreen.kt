@@ -23,15 +23,29 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.android.kidstracker.ui.theme.KidsTrackerTheme
+import com.android.kidstracker.data.network.SupabaseClient
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-// Dummy Data Class
-data class TaskItem(
-    val title: String,
-    val dueDate: String,
-    val description: String,
-    val completionStatus: String,
-    val isUrgent: Boolean = false
+@Serializable
+data class Tugas(
+    val id: String = "",
+    val judul: String,
+    val deskripsi: String? = null,
+    val tanggal_mulai: String? = null,
+    val waktu_mulai: String? = null,
+    val tenggat_waktu: String? = null,
+    val waktu_tenggat: String? = null,
+    val id_guru: String? = null
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -40,31 +54,34 @@ fun GuruTaskAndExportScreen(
     navController: NavController,
     onNavigateBack: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    var isAddSheetOpen by remember { mutableStateOf(false) }
+    var showAddDialog by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    val tasks = listOf(
-        TaskItem(
-            title = "Observasi Motorik Kasar",
-            dueDate = "Besok",
-            description = "Amati kemampuan anak melompat dengan dua kaki dan catat durasi keseimbangan mereka saat mendarat.",
-            completionStatus = "12/15 Selesai",
-            isUrgent = true
-        ),
-        TaskItem(
-            title = "Pengenalan Bentuk Dasar",
-            dueDate = "12 Okt 2023",
-            description = "Minta anak untuk mengelompokkan balok kayu berdasarkan bentuk geometri (lingkaran, persegi, segitiga).",
-            completionStatus = "8/15 Selesai"
-        ),
-        TaskItem(
-            title = "Jurnal Emosi Harian",
-            dueDate = "15 Okt 2023",
-            description = "Orang tua diwajibkan mengisi jurnal terkait respons emosional anak saat menghadapi transisi aktivitas.",
-            completionStatus = "0/15 Selesai"
-        )
-    )
+    var tugasList by remember { mutableStateOf<List<Tugas>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    val fetchTugas: () -> Unit = {
+        coroutineScope.launch {
+            try {
+                isLoading = true
+                val currentUser = SupabaseClient.client.auth.currentUserOrNull()
+                val result = SupabaseClient.client.postgrest["tugas"]
+                    .select { filter { eq("id_guru", currentUser?.id ?: "") } }
+                    .decodeList<Tugas>()
+                tugasList = result
+            } catch (e: Exception) {
+                Toast.makeText(context, "Gagal memuat tugas: ${e.message}", Toast.LENGTH_SHORT).show()
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        fetchTugas()
+    }
 
     Scaffold(
         topBar = {
@@ -140,7 +157,7 @@ fun GuruTaskAndExportScreen(
             // "Tambah Tugas Baru" Button at the top
             item {
                 Button(
-                    onClick = { isAddSheetOpen = true },
+                    onClick = { showAddDialog = true },
                     modifier = Modifier.fillMaxWidth().height(56.dp),
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -172,7 +189,7 @@ fun GuruTaskAndExportScreen(
                             .padding(horizontal = 12.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = "${tasks.size} Tugas",
+                            text = "${tugasList.size} Tugas",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
@@ -181,8 +198,39 @@ fun GuruTaskAndExportScreen(
             }
 
             // Tasks List
-            items(tasks) { task ->
-                TaskCard(task = task)
+            if (isLoading) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().height(100.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
+            } else if (tugasList.isEmpty()) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().height(100.dp), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "Belum ada tugas yang diberikan.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else {
+                items(tugasList) { task ->
+                    TaskCard(
+                        task = task,
+                        onDelete = {
+                            coroutineScope.launch {
+                                try {
+                                    SupabaseClient.client.postgrest["tugas"].delete { filter { eq("id", task.id) } }
+                                    Toast.makeText(context, "Tugas dihapus", Toast.LENGTH_SHORT).show()
+                                    fetchTugas()
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Gagal menghapus", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    )
+                }
             }
 
             // Export Section
@@ -241,15 +289,23 @@ fun GuruTaskAndExportScreen(
         }
 
         // Add Task Bottom Sheet Form
-        if (isAddSheetOpen) {
+        if (showAddDialog) {
             ModalBottomSheet(
-                onDismissRequest = { isAddSheetOpen = false },
+                onDismissRequest = { showAddDialog = false },
                 sheetState = sheetState,
                 containerColor = MaterialTheme.colorScheme.surfaceContainer
             ) {
                 var taskTitle by remember { mutableStateOf("") }
                 var taskDesc by remember { mutableStateOf("") }
-                var taskDue by remember { mutableStateOf("") }
+                var inputTanggalMulai by remember { mutableStateOf("") }
+                var inputWaktuMulai by remember { mutableStateOf("") }
+                var inputTanggalTenggat by remember { mutableStateOf("") }
+                var inputWaktuTenggat by remember { mutableStateOf("") }
+
+                var showStartDatePicker by remember { mutableStateOf(false) }
+                var showDueDatePicker by remember { mutableStateOf(false) }
+                var showStartTimePicker by remember { mutableStateOf(false) }
+                var showDueTimePicker by remember { mutableStateOf(false) }
 
                 Column(
                     modifier = Modifier
@@ -280,20 +336,85 @@ fun GuruTaskAndExportScreen(
                     )
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    OutlinedTextField(
-                        value = taskDue,
-                        onValueChange = { taskDue = it },
-                        label = { Text("Tenggat Waktu") },
-                        leadingIcon = { Icon(Icons.Default.CalendarToday, contentDescription = null) },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
+                    // Tanggal & Waktu Mulai
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val startDateSource = remember { MutableInteractionSource() }
+                        if (startDateSource.collectIsPressedAsState().value) showStartDatePicker = true
+                        OutlinedTextField(
+                            value = inputTanggalMulai,
+                            onValueChange = {},
+                            label = { Text("Tgl Mulai") },
+                            readOnly = true,
+                            interactionSource = startDateSource,
+                            leadingIcon = { Icon(Icons.Default.CalendarToday, contentDescription = null) },
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        val startTimeSource = remember { MutableInteractionSource() }
+                        if (startTimeSource.collectIsPressedAsState().value) showStartTimePicker = true
+                        OutlinedTextField(
+                            value = inputWaktuMulai,
+                            onValueChange = {},
+                            label = { Text("Jam Mulai") },
+                            readOnly = true,
+                            interactionSource = startTimeSource,
+                            leadingIcon = { Icon(Icons.Default.Schedule, contentDescription = null) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Tanggal & Waktu Tenggat
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val dueDateSource = remember { MutableInteractionSource() }
+                        if (dueDateSource.collectIsPressedAsState().value) showDueDatePicker = true
+                        OutlinedTextField(
+                            value = inputTanggalTenggat,
+                            onValueChange = {},
+                            label = { Text("Tgl Tenggat") },
+                            readOnly = true,
+                            interactionSource = dueDateSource,
+                            leadingIcon = { Icon(Icons.Default.CalendarToday, contentDescription = null) },
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        val dueTimeSource = remember { MutableInteractionSource() }
+                        if (dueTimeSource.collectIsPressedAsState().value) showDueTimePicker = true
+                        OutlinedTextField(
+                            value = inputWaktuTenggat,
+                            onValueChange = {},
+                            label = { Text("Jam Tenggat") },
+                            readOnly = true,
+                            interactionSource = dueTimeSource,
+                            leadingIcon = { Icon(Icons.Default.Schedule, contentDescription = null) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                     Spacer(modifier = Modifier.height(24.dp))
 
                     Button(
                         onClick = {
-                            coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
-                                if (!sheetState.isVisible) isAddSheetOpen = false
+                            coroutineScope.launch {
+                                try {
+                                    val currentUser = SupabaseClient.client.auth.currentUserOrNull()
+                                    val newTask = Tugas(
+                                        judul = taskTitle,
+                                        deskripsi = taskDesc.ifBlank { null },
+                                        tanggal_mulai = inputTanggalMulai.ifBlank { null },
+                                        waktu_mulai = inputWaktuMulai.ifBlank { null },
+                                        tenggat_waktu = inputTanggalTenggat.ifBlank { null },
+                                        waktu_tenggat = inputWaktuTenggat.ifBlank { null },
+                                        id_guru = currentUser?.id
+                                    )
+                                    SupabaseClient.client.postgrest["tugas"].insert(newTask)
+                                    
+                                    sheetState.hide()
+                                    showAddDialog = false
+                                    Toast.makeText(context, "Tugas berhasil dibuat", Toast.LENGTH_SHORT).show()
+                                    fetchTugas()
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Gagal menyimpan: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -305,27 +426,107 @@ fun GuruTaskAndExportScreen(
                     }
                     Spacer(modifier = Modifier.height(24.dp))
                 }
+                
+                // Pickers Setup
+                if (showStartDatePicker) {
+                    val datePickerState = rememberDatePickerState()
+                    DatePickerDialog(
+                        onDismissRequest = { showStartDatePicker = false },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                datePickerState.selectedDateMillis?.let { millis ->
+                                    val formattedDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(millis))
+                                    inputTanggalMulai = formattedDate
+                                }
+                                showStartDatePicker = false
+                            }) { Text("OK") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showStartDatePicker = false }) { Text("Batal") }
+                        }
+                    ) {
+                        DatePicker(state = datePickerState)
+                    }
+                }
+
+                if (showDueDatePicker) {
+                    val datePickerState = rememberDatePickerState()
+                    DatePickerDialog(
+                        onDismissRequest = { showDueDatePicker = false },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                datePickerState.selectedDateMillis?.let { millis ->
+                                    val formattedDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(millis))
+                                    inputTanggalTenggat = formattedDate
+                                }
+                                showDueDatePicker = false
+                            }) { Text("OK") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showDueDatePicker = false }) { Text("Batal") }
+                        }
+                    ) {
+                        DatePicker(state = datePickerState)
+                    }
+                }
+
+                if (showStartTimePicker) {
+                    val timePickerState = rememberTimePickerState()
+                    AlertDialog(
+                        onDismissRequest = { showStartTimePicker = false },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                inputWaktuMulai = String.format(Locale.getDefault(), "%02d:%02d", timePickerState.hour, timePickerState.minute)
+                                showStartTimePicker = false
+                            }) { Text("OK") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showStartTimePicker = false }) { Text("Batal") }
+                        },
+                        text = {
+                            TimePicker(state = timePickerState)
+                        }
+                    )
+                }
+
+                if (showDueTimePicker) {
+                    val timePickerState = rememberTimePickerState()
+                    AlertDialog(
+                        onDismissRequest = { showDueTimePicker = false },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                inputWaktuTenggat = String.format(Locale.getDefault(), "%02d:%02d", timePickerState.hour, timePickerState.minute)
+                                showDueTimePicker = false
+                            }) { Text("OK") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showDueTimePicker = false }) { Text("Batal") }
+                        },
+                        text = {
+                            TimePicker(state = timePickerState)
+                        }
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-fun TaskCard(task: TaskItem) {
+fun TaskCard(task: Tugas, onDelete: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Row(modifier = Modifier.fillMaxWidth()) {
+        Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
             // Color indicator line
-            val indicatorColor = if (task.isUrgent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
             Box(
                 modifier = Modifier
                     .width(4.dp)
                     .fillMaxHeight()
-                    .background(indicatorColor)
+                    .background(MaterialTheme.colorScheme.primary)
             )
 
             Column(modifier = Modifier.padding(16.dp)) {
@@ -336,33 +537,33 @@ fun TaskCard(task: TaskItem) {
                     verticalAlignment = Alignment.Top
                 ) {
                     Text(
-                        text = task.title,
+                        text = task.judul,
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Box(
-                        modifier = Modifier
-                            .background(
-                                if (task.isUrgent) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                                RoundedCornerShape(50)
-                            )
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                if (task.isUrgent) Icons.Default.Schedule else Icons.Default.CalendarToday,
-                                contentDescription = null,
-                                tint = if (task.isUrgent) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = task.dueDate,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (task.isUrgent) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                    
+                    if (!task.tenggat_waktu.isNullOrBlank()) {
+                        Box(
+                            modifier = Modifier
+                                .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(50))
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.CalendarToday,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = task.tenggat_waktu,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            }
                         }
                     }
                 }
@@ -370,15 +571,17 @@ fun TaskCard(task: TaskItem) {
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // Description
-                Text(
-                    text = task.description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
+                if (!task.deskripsi.isNullOrBlank()) {
+                    Text(
+                        text = task.deskripsi,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+                
                 HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 Spacer(modifier = Modifier.height(8.dp))
 
@@ -388,26 +591,23 @@ fun TaskCard(task: TaskItem) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Group,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = task.completionStatus,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.outline
-                        )
-                    }
                     Text(
                         text = "Lihat Detail",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.clickable { /*TODO*/ }
                     )
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Hapus Tugas",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
